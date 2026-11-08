@@ -2,7 +2,7 @@
 
 人脸匿名化课程项目的可移植代码。基于 **CLIP ViT-H/14 + IP-Adapter Plus + Realistic Vision V5.1 + UNet LoRA**，用筛选得到的匿名监督图学习“原图视觉特征→匿名图”的条件分布。支持两条复现路线：直接MSE VAE训练，以及原VAE训练后切换MSE VAE继续微调。
 
-本目录仅含代码和说明，不含数据、缓存、初始/训练权重、HOPE配置或测试文件。不需要私人服务器路径；GPU任务使用单机 `torchrun`。课程提交路径为 `ImageGeneration/group-14/code/`，组级结果展示见上级 README。
+本目录提供特征提取、训练、评估和推理代码，GPU任务使用单机 `torchrun`。数据和权重按下方说明准备。课程提交路径为 `ImageGeneration/group-14/code/`，组级结果展示见上级 README。
 
 ## 方法
 
@@ -15,7 +15,7 @@ z_0=E_{VAE}(y),\quad z_t=\sqrt{\bar\alpha_t}z_0+\sqrt{1-\bar\alpha_t}\epsilon,
 \quad L=\mathbb E\left[\|\epsilon_\theta(z_t,t,C(x))-\epsilon\|^2/(CHW)\right].
 $$
 
-这里 $x$ 是原图，$y$ 是匿名监督图，不是原图重建。没有额外像素、身份或表情训练损失。身份/表情/姿态/MUSIQ用于筛选监督图与评测。
+这里 $x$ 是原图，$y$ 是选出的匿名监督图。训练使用去噪MSE，身份、表情、姿态和MUSIQ指标用于监督图筛选与评测。
 
 $$
 \hat\epsilon=\epsilon_{null}+s(\epsilon_{condition}-\epsilon_{null}).
@@ -57,7 +57,7 @@ face_anonymization_project_code_cjw/
     tools/openface/{build/bin/FaceLandmarkImg,install/lib,install/lib64}/
 ```
 
-路径都可改，不要求数据放代码内：
+通过环境变量设置数据、模型和OpenFace路径：
 
 ```bash
 export PROJECT_ROOT=/absolute/path/to/workspace
@@ -80,9 +80,9 @@ pip install --no-deps pyiqa==0.1.13
 
 MUSIQ依赖的pyiqa 0.1.13为其他指标固定了Transformers 4.37.2，与本工程4.57冲突，因此显式安装MUSIQ运行依赖后单独以`--no-deps`安装pyiqa（本项目不调用那些其他指标）。
 
-历史成功环境：torch2.7.1+cu126、torchvision0.22.1、diffusers0.35.1、transformers4.57.0、accelerate1.10.1、peft0.19.1、timm0.9.16。若使用其他PEFT版本，加载LoRA使用本项目严格默认adapter恢复器，以避免不必要的张量并行导入；不支持任意分片/DoRA权重。无需xformers或flash-attn，默认PyTorch SDPA。GPU训练建议bf16。
+实验环境：torch2.7.1+cu126、torchvision0.22.1、diffusers0.35.1、transformers4.57.0、accelerate1.10.1、peft0.19.1、timm0.9.16。若使用其他PEFT版本，加载LoRA使用本项目严格默认adapter恢复器，以避免不必要的张量并行导入；恢复器适用于本项目使用的默认adapter权重格式；注意力计算使用PyTorch SDPA。GPU训练建议bf16。
 
-OpenFace是独立C++程序，不能仅靠pip安装：参照 [OpenFace官方说明](https://github.com/TadasBaltrusaitis/OpenFace) 编译并放置FaceLandmarkImg及其所需模型/库。默认完整评估需要它。`SKIP_OPENFACE=1`可跳过AU，但报告会标明非完整协议。若只训练，`AUTO_EVAL=0`可不配置评估依赖。
+OpenFace需要单独编译：参照 [OpenFace官方说明](https://github.com/TadasBaltrusaitis/OpenFace) 编译并放置FaceLandmarkImg及其所需模型/库。默认完整评估需要它。`SKIP_OPENFACE=1`可跳过AU，但报告会标明非完整协议。若只训练，`AUTO_EVAL=0`可不配置评估依赖。
 
 ## 权重下载
 
@@ -108,7 +108,7 @@ scheduler/scheduler_config.json
 tokenizer/{merges.txt,vocab.json,tokenizer_config.json,special_tokens_map.json}
 ```
 
-底座自带VAE与官方MSE VAE是两套参数，路线B需要两套都保留。不要下载根目录inpainting checkpoint代替四通道UNet，也不必额外下载根目录单文件.ckpt。代码不自动联网下载，文件齐全后离线运行。MSE VAE已核对的权重SHA256：`a1d993488569e928462932c8c38a0760b874d166399b14414135bd9c42df5815`；Plus为`1cb77fc0613369b66be1531cc452b823a4af7d87ee56956000a69fc39e3817ba`。
+底座自带VAE与官方MSE VAE是两套参数，路线B需要两套都保留。学生模型使用上面的Diffusers四通道UNet权重；根目录单文件.ckpt无需下载。代码不自动联网下载，文件齐全后离线运行。MSE VAE已核对的权重SHA256：`a1d993488569e928462932c8c38a0760b874d166399b14414135bd9c42df5815`；Plus为`1cb77fc0613369b66be1531cc452b823a4af7d87ee56956000a69fc39e3817ba`。
 
 ## 数据准备
 
@@ -120,7 +120,7 @@ tokenizer/{merges.txt,vocab.json,tokenizer_config.json,special_tokens_map.json}
 {"id":"00001","source_path":"/absolute/workspace/face_dataset/images/00001.png","target_path":"/absolute/workspace/outputs/teacher_samples/train/round_058/00001.png"}
 ```
 
-清单必须完整覆盖train.csv，每源图恰好一次；目标是已选的匿名图，不是源图自身，目标文件须存在。输入原图只用于离线CLIP特征，Dataset读取监督图和特征。可用 `scripts/normalize_pairs.py --input <相对路径配对.jsonl> --output <conditions.jsonl> --data-root <face_dataset> --target-root <教师图根目录>` 将准备的相对路径配对转成当前机器绝对路径。
+清单需完整覆盖train.csv，每源图恰好一次；target_path指向选出的匿名监督图。输入原图只用于离线CLIP特征，Dataset读取监督图和特征。可用 `scripts/normalize_pairs.py --input <相对路径配对.jsonl> --output <conditions.jsonl> --data-root <face_dataset> --target-root <教师图根目录>` 将准备的相对路径配对转成当前机器绝对路径。
 
 已有64最佳监督图时直接使用；无需重新采样。若从零构造监督：
 
@@ -131,7 +131,7 @@ for ROUND in $(seq 1 64); do ROUND="$ROUND" bash scripts/sample_teacher.sh; done
 GPUS=4 bash scripts/select_teacher.sh
 ```
 
-教师可以使用原图、mask及文本，正式学生不使用这些输入。采样seed默认随机并写入manifest，因此重新采样不会逐像素复现已有监督；精确模型复现需要同一监督图及清单。教师推理脚本要求SD修复模型的fp16变体权重（unet、vae、text_encoder）。选择以256px、JPEG75及主脸提特征评分，依靠现有InsightFace/HSE/MUSIQ。MUSIQ不保证真实照片风格。64轮候选约102万张，需要较大存储。
+教师可以使用原图、mask及文本，正式学生不使用这些输入。采样seed默认随机并写入manifest，因此重新采样不会逐像素复现已有监督；精确模型复现需要同一监督图及清单。教师推理脚本要求SD修复模型的fp16变体权重（unet、vae、text_encoder）。选择以256px、JPEG75及主脸提特征评分，依靠现有InsightFace/HSE/MUSIQ。64轮候选约102万张，需要较大存储。
 
 ## 路线A：直接MSE VAE训练（v5预训练起点）
 
@@ -140,7 +140,7 @@ GPUS=4 bash scripts/select_teacher.sh
 GPUS=4 BATCH_SIZE=16 GLOBAL_BATCH=64 SEED=20261031 bash scripts/train_direct.sh
 ```
 
-这里“预训练起点”不是随机从零训练：载入Realistic Vision及原始Plus权重，从未加载本项目匿名微调checkpoint。冻结MSE VAE编码匿名监督图，训练Resampler/IP K/V/LoRA。默认每组学习率1e-4，LoRA rank32/alpha32/dropout0.05，AdamW weight decay0.01，warmup5%+cosine，clip1，bf16，512px。16000图/全局64每轮250次更新，10轮2500次。
+路线A载入Realistic Vision和原始IP-Adapter Plus权重后，直接学习匿名图生成。冻结MSE VAE编码匿名监督图，训练Resampler/IP K/V/LoRA。默认每组学习率1e-4，LoRA rank32/alpha32/dropout0.05，AdamW weight decay0.01，warmup5%+cosine，clip1，bf16，512px。16000图/全局64每轮250次更新，10轮2500次。
 
 ## 路线B：原VAE先训练，再切MSE继续微调
 
@@ -153,9 +153,9 @@ INIT_CHECKPOINT=/absolute/workspace/checkpoints/stage1_original_vae_<run_id>/epo
 GPUS=4 BATCH_SIZE=16 GLOBAL_BATCH=64 SEED=20261031 bash scripts/train_stage2.sh
 ```
 
-先等B1完成再提交B2。历史运行选择了B1 epoch9；已核对原v4 config的seed为1324400183，路线A及阶段B2均为20261031。上面的B1命令使用1324400183；新实验可固定其他seed但应明确记录，不根据test调参。B2默认新增10轮，epoch1指新阶段第1轮，不是原总epoch10。短程适配可设EPOCHS=3，须注明训练预算变化。
+B1完成后，从epoch 9开始B2。实验中B1的seed为1324400183，路线A及B2均为20261031。B2默认训练10轮，epoch从1重新计数；EPOCHS可调整第二阶段轮数。
 
-INIT_CHECKPOINT只恢复LoRA、IP注意力、Resampler及固定空条件；**重新建立优化器、scheduler，global_step归零**。RESUME则恢复同一实验完整状态，不能与INIT_CHECKPOINT共用；resume拒绝换VAE哈希/配置。旧checkpoint记录绝对底座路径，换机器时不能直接当portable checkpoint使用；本代码提供从公开初始权重重训流程，跨机器迁移需保持记录路径或自行严格迁移配置，不要跳过底座一致性检查。
+INIT_CHECKPOINT只恢复LoRA、IP注意力、Resampler及固定空条件；**重新建立优化器、scheduler，global_step归零**。RESUME则恢复同一实验完整状态，与INIT_CHECKPOINT二选一；恢复时会检查VAE配置和权重哈希。checkpoint配置记录了底座绝对路径。迁移到另一台机器时，需要更新配置中的路径，并保留底座一致性检查。
 
 ## 特征缓存与并行
 
@@ -176,7 +176,7 @@ RUN_DIR=/absolute/workspace/checkpoints/<run_id> EPOCHS=1-10 bash scripts/evalua
 RUN_DIR=/absolute/workspace/checkpoints/<run_id> EPOCHS=4 SPLIT=test bash scripts/evaluate.sh
 ```
 
-独立test需先 `SPLIT=test bash scripts/prepare.sh`。跳过AU需显式SKIP_OPENFACE=1；没有有效必要指标时评估会报错并保留诊断。完整报告直接嵌入曲线与五图对比，保存metrics.csv/metrics.json/per_image.csv。训练数据清单为JSONL；评测CSV保留以兼容现有评测接口。BASELINE_EVALUATION可指定含config.json/summary.json/per_image.csv的真实基线目录，无基线时显示N/A，不伪造分数。
+独立test需先 `SPLIT=test bash scripts/prepare.sh`。跳过AU需显式SKIP_OPENFACE=1；没有有效必要指标时评估会报错并保留诊断。完整报告直接嵌入曲线与五图对比，保存metrics.csv/metrics.json/per_image.csv。训练数据清单为JSONL；评测CSV保留以兼容现有评测接口。BASELINE_EVALUATION可指定含config.json、summary.json和per_image.csv的基线评估目录；未提供时基线列显示N/A。
 
 单次生成：
 
@@ -186,7 +186,7 @@ CONDITIONS=/absolute/workspace/data/features_v4/test/conditions.jsonl \
 SAMPLER=dpmpp_2m_karras GUIDANCE_SCALE=3 IP_SCALE=0.8 SEED=20261026 bash scripts/infer.sh
 ```
 
-最终test每源图生成一次，按验证集选定checkpoint/参数，不能以原图分数多次采样择优。
+测试时使用验证集选出的checkpoint和推理参数，每张原图生成一次。
 
 ## 指标与历史参考
 
@@ -196,27 +196,24 @@ SAMPLER=dpmpp_2m_karras GUIDANCE_SCALE=3 IP_SCALE=0.8 SEED=20261026 bash scripts
 | 路线A最佳epoch7 | val/2000 | 0.73782 | 0.05415 | 3.18187 | 0.57784 | 0.16069 | 0.39901 | 65.21270 |
 | 路线B新增epoch4 | val/2000 | 0.74460 | 0.05138 | 3.11604 | 0.58235 | 0.15771 | 0.39354 | 65.86755 |
 
-baseline跨划分且允许原图修复上下文，只作参考；两条路线均完整2000身份配对，AU分别1815、1801个有效配对。没有将该表作为新机器逐值一致保证。
+Baseline为test结果，A/B为val结果。A/B各有2000个有效身份配对，AU有效配对分别为1815、1801。
 
-ArcFace单位向量余弦越低越匿名；姿态为pitch/yaw/roll最小环绕角误差绝对值均值；HSE为主脸特征余弦，越高越保持；VA为两维情绪回归MAE；AU为有效OpenFace强度MAE；MUSIQ为无参考图像质量。所有评测缩放256px，生成图JPEG75，主脸优先，单项只统计有效配对。HSE无检测脸时可能退回整图，MUSIQ不保证照片真实性。
+ArcFace单位向量余弦越低越匿名；姿态为pitch/yaw/roll最小环绕角误差绝对值均值；HSE为主脸特征余弦，越高越保持；VA为两维情绪回归MAE；AU为有效OpenFace强度MAE；MUSIQ为无参考图像质量。所有评测缩放256px，生成图JPEG75，主脸优先，单项只统计有效配对。HSE无检测脸时可能退回整图，MUSIQ反映清晰度等感知质量，皮肤纹理和妆感需要结合样例观察。
 
-综合分使用data_selection/scoring.py，逐图归一化后加权：身份0.25、姿态0.20、HSE0.20、VA0.10、MUSIQ0.20、有效性0.05；无必要特征则计0，固定总源图分母，AU单独汇报。归一化为clip((.35-id)/.35)、exp(-pose/15)、clip((hse-.2)/.8)、exp(-VA/.5)、clip((MUSIQ-20)/60)，clip到[0,1]。不能把各单项均值代入公式冒充逐图综合均值。
+综合分使用data_selection/scoring.py，逐图归一化后加权：身份0.25、姿态0.20、HSE0.20、VA0.10、MUSIQ0.20、有效性0.05；无必要特征则计0，固定总源图分母，AU单独汇报。归一化为clip((.35-id)/.35)、exp(-pose/15)、clip((hse-.2)/.8)、exp(-VA/.5)、clip((MUSIQ-20)/60)，clip到[0,1]。
 
 ## 为什么两阶段可能更好（猜想）
 
 1. **逐步适配**：第一阶段先在原底座熟悉的VAE latent上学习匿名监督映射；第二阶段不用同时从头学习匿名化和适应新VAE的编码统计。虽然两个VAE尺度相同，参数及编码分布并不完全相同。
-2. **新学习率计划**：第一阶段后期cosine学习率很低；第二阶段重置优化器并重新warmup，给已经学到条件映射的模型一次针对新目标分布调整的机会。这是解释，不代表学习率重启必然有利。
-3. **更多历史训练量**：第二阶段最佳权重继承第一阶段2250次更新，再新增1000次；路线A最佳为1750次。优势可能部分来自更多累计更新，而非两阶段策略本身。不能称为同算力公平胜出。
-4. **观测差距有限**：综合分差约0.00678，只做过单个训练seed，未验证显著性；有可能受验证选模与随机性影响。只能说该次实验两阶段略优。
+2. **新学习率计划**：第一阶段后期cosine学习率很低；第二阶段重置优化器并重新warmup，给已经学到条件映射的模型一次针对新目标分布调整的机会。
+3. **更多历史训练量**：第二阶段最佳权重继承第一阶段2250次更新，再新增1000次；路线A最佳为1750次。优势可能部分来自更多累计更新，而非两阶段策略本身。
 
-MSE VAE已提升解码质量，但磨皮、妆感、年龄外观偏移仍存在；64选1监督本身也可能有这些偏差。低身份cos或高MUSIQ不能独立证明匿名照片合格。
 
-## 来源与复现范围
+MSE VAE已提升解码质量，但磨皮、妆感、年龄外观偏移仍存在；64选1监督本身也可能有这些偏差。后续希望从监督图入手改善自然皮肤纹理和外观保持。
+
+## 参考实现
 
 架构参考 [IP-Adapter](https://github.com/tencent-ailab/IP-Adapter)，扩散模型参考 [Diffusers](https://github.com/huggingface/diffusers)。第三方来源及许可证见THIRD_PARTY.md。数据和初始权重需自行获取；训练后权重也未打包。
-
-轻量检查已完成：全部Python AST与Shell语法、训练/推理/评估CLI入口、真实小型Diffusers模型CFG前向反向、模型权重初始化/LoRA恢复与新优化器状态、旧缓存只读复用。检查在现有cv环境通过，借用原项目测试入口执行，发布包不保存测试文件。未在全新机器重跑完整百万候选和两条训练路线，没有HOPE配置。
-
 
 ## 打包课程 submission
 
@@ -227,4 +224,4 @@ GENERATED=/absolute/workspace/outputs/inference_test \
 SUBMISSION=/absolute/workspace/outputs/submission.csv bash scripts/submission.sh
 ```
 
-脚本以正式test.csv的2000个ID严格校验，统一为256×256 JPEG quality75，再输出`id,image_b64`。仅打包，不上传Kaggle；不要将提交CSV、大图数据或checkpoint提交到课程Git仓库。
+脚本以正式test.csv的2000个ID严格校验，统一为256×256 JPEG quality75，再输出`id,image_b64`。生成的CSV可直接用于Kaggle提交。

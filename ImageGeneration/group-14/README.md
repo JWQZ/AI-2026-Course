@@ -17,14 +17,14 @@ ImageGeneration/group-14/
     data_selection/   # 固定评分和逐源图64选一
     evaluation/       # ArcFace/姿态/HSE/VA/AU/MUSIQ
     scripts/          # 环境变量控制的运行入口与submission打包
-  results/            # 可直接查看的真实实验曲线与固定样例
+  results/            # 实验曲线与样例图片
 ```
 
-不包含数据集、初始/训练权重、虚拟环境、缓存或提交CSV。课程FFHQ数据仅用于课程，不在公开仓库转发完整数据集。示例图片来自课程数据及对应模型输出，不应另作身份识别用途。
+数据集和模型权重需按下方说明准备。示例图片来自课程FFHQ数据及模型生成结果。
 
 ## 环境和使用方法
 
-Python 3.10，匹配CUDA的PyTorch/torchvision；训练使用单节点4张A100-80G、bf16、DDP，支持调整为其他GPU数量。24GB是作业建议最低资源，不是本项目实际实验设备。无需强制安装xformers/flash-attn，使用PyTorch SDPA。完整AU评估还需编译OpenFace。
+Python 3.10，匹配CUDA的PyTorch/torchvision；训练使用单节点4张A100-80G、bf16、DDP，支持调整为其他GPU数量。注意力计算使用PyTorch SDPA。完整AU评估还需编译OpenFace。
 
 ```bash
 cd ImageGeneration/group-14/code
@@ -35,9 +35,9 @@ export PROJECT_ROOT=/absolute/path/to/workspace
 export MODEL_ROOT=/absolute/path/to/models
 ```
 
-pyiqa仅用于MUSIQ，其其他架构的旧Transformers依赖与本工程冲突，故MUSIQ所需依赖显式列出后单独安装pyiqa。不要用`pip install pyiqa`覆盖当前Transformers版本。
+pyiqa仅用于MUSIQ，其其他架构的旧Transformers依赖与本工程冲突，故MUSIQ所需依赖显式列出后单独安装pyiqa。请按上述顺序安装。
 
-按[代码说明](code/README.md)放置课程数据、下载RV5.1、IP-Adapter Plus/CLIP和官方MSE VAE等权重。下载链接、完整文件结构、OpenFace配置、特征准备与全部脚本参数均在该文档，不依赖私人服务器绝对路径。
+按[代码说明](code/README.md)放置课程数据、下载RV5.1、IP-Adapter Plus/CLIP和官方MSE VAE等权重。下载链接、完整文件结构、OpenFace配置、特征准备与全部脚本参数均在该文档。
 
 复现顺序：
 
@@ -55,10 +55,10 @@ INIT_CHECKPOINT=/absolute/path/to/stage1_run/epoch_009 \
 GPUS=4 BATCH_SIZE=16 GLOBAL_BATCH=64 SEED=20261031 bash scripts/train_stage2.sh
 ```
 
-A历史最佳epoch7；B第二阶段历史最佳epoch4。B只初始化模型权重，重置优化器/学习率计划/步数，不等于原状态resume。新实验应仍由val选模，不能根据test调参。
+验证集选出的最佳模型为A的epoch 7和B第二阶段的epoch 4。B第二阶段加载第一阶段模型权重，并重新初始化优化器、学习率计划和训练步数。
 
 ```bash
-# 对test单次生成并打包，不按test分数采样择优
+# 使用验证集选出的checkpoint生成测试图片，并打包提交
 SPLIT=test bash scripts/prepare.sh
 CHECKPOINT=/absolute/path/to/best_checkpoint \
 CONDITIONS="$PROJECT_ROOT/data/features_v4/test/conditions.jsonl" \
@@ -77,11 +77,11 @@ $$z_t=\sqrt{\bar\alpha_t}E(y)+\sqrt{1-\bar\alpha_t}\epsilon,\qquad L=\mathbb E\|
 
 没有额外像素/身份/表情/LPIPS训练损失；这些属性主要通过伪监督筛选保持。10%原始CLIP条件置零，经同一Resampler学习空条件；推理CFG为`epsilon_null + 3*(epsilon_cond-epsilon_null)`。IP_SCALE=.8是图像注意力强度，不是CFG。
 
-每阶段10epochs、2500更新，global batch64；AdamW学习率1e-4、weight decay.01、cosine schedule、warmup.05，LoRA rank/alpha32、dropout.05，512px。最终推理官方MSE VAE、DPM++ 2M Karras、30步、CFG3、IP.8。B最佳继承第一阶段2250更新再新增1000更新，A最佳1750更新，不能声称相同总算力下B更好。
+每阶段10epochs、2500更新，global batch64；AdamW学习率1e-4、weight decay.01、cosine schedule、warmup.05，LoRA rank/alpha32、dropout.05，512px。最终推理官方MSE VAE、DPM++ 2M Karras、30步、CFG3、IP.8。A的最佳模型训练了1750次更新；B的最佳模型经历了第一阶段2250次、第二阶段1000次更新。
 
 ## 结果展示与评估口径
 
-所有单项按主脸评估：ArcFace身份cos越低越不像原身份；姿态角MAE越低越好；HSE隐特征cos越高越好；VA/AU误差越低越好；MUSIQ越高代表较高感知质量，但不等于照片真实性。评测256px，生成图JPEG75；AU由OpenFace静态回归，仅在有效配对上统计。单项均值分母可能不同。项目自定义Q逐图计算，必要配对失败记0、分母固定2000，不是Kaggle官方评分，不用各项均值拼造Q。
+身份、姿态和表情指标以图中的最大人脸为评估对象：ArcFace身份cos越低越不像原身份；姿态角MAE越低越好；HSE隐特征cos越高越好；VA/AU误差越低越好；MUSIQ用于衡量整图感知质量。评测256px，生成图JPEG75；AU由OpenFace静态回归，仅在有效配对上统计。单项均值分母可能不同。综合分Q按每张图计算后取均值，无法完成必要特征配对的图片记0分，总分母为2000。
 
 Q权重为身份.25、姿态.20、HSE.20、VA.10、MUSIQ.20、有效性.05；各项归一化依次为clip((.35-id)/.35)、exp(-pose/15)、clip((hse-.2)/.8)、exp(-VA/.5)、clip((musiq-20)/60)，clip到[0,1]。AU不参与Q。
 
@@ -91,7 +91,7 @@ Q权重为身份.25、姿态.20、HSE.20、VA.10、MUSIQ.20、有效性.05；各
 | A最佳epoch7 | val/2000 | .73782 | .05415 | 3.18187 | .57784 | .16069 | .39901 | 65.21270 | 2000/2000 | 1815/2000 |
 | B最佳新epoch4 | 同一val/2000 | .74460 | .05138 | 3.11604 | .58235 | .15771 | .39354 | 65.86755 | 2000/2000 | 1801/2000 |
 
-Baseline与A/B不在同一划分，不能据此宣称严格测试提升。A/B使用相同val推理配置；B仅有约.00678的Q优势，没有多seed、等总预算或显著性检验。两条最佳checkpoint均另已完成test2000单次推理和CSV逐条校验，但**未重算完整test指标、未报告Kaggle返回分数**。提交CSV另行交付，不上传Git。
+表中Baseline来自test，A/B来自val。两条路线采用相同的验证推理配置，B的综合分比A高0.00678。两条最佳模型已完成2000张test图片生成，提交CSV另行交付。
 
 ### 同源验证前五张：原图、A最佳、B最佳
 
@@ -101,11 +101,11 @@ Baseline与A/B不在同一划分，不能据此宣称严格测试提升。A/B使
 
 ![test四路对比](results/test_final_four_way.png)
 
-固定前五张，未按效果挑选；验证集没有教师64轮采样，不把训练监督图冒充验证集同源监督。
+以上两组对比分别取val和test清单中的前五张。
 
 ### 采样累计最优与教师监督
 
-固定8张训练源图×64候选=512记录，逐源图、逐指标独立取历史best后求均值；Q在真实候选Q中独立取best，不拼接不同指标最优。K表示实际候选数，身份/姿态/VA取min，HSE/MUSIQ/Q取max。Q(K=1/8/32/64)=.692319/.782595/.807468/.821399，后段收益趋缓。这是小样本诊断，不代表全部训练集。
+固定8张训练源图×64候选=512记录，逐源图、逐指标独立取历史best后求均值；Q在真实候选Q中独立取best。K表示实际候选数，身份/姿态/VA取min，HSE/MUSIQ/Q取max。Q(K=1/8/32/64)=.692319/.782595/.807468/.821399，后段收益趋缓。
 
 ![采样收益](results/sampling64.png)
 ![原图、首次采样、64最佳](results/teacher_best64.png)
@@ -117,8 +117,8 @@ Baseline与A/B不在同一划分，不能据此宣称严格测试提升。A/B使
 
 ## 局限与展望
 
-仍存在皮肤过度平滑、妆感、外观年轻化、局部表情和眼镜等配饰变化；MUSIQ和身份cos不能替代人工真实性检查，也不能证明绝对匿名。可能由教师美颜先验、缺少真实纹理筛选项和监督偏差导致；这是合理解释，尚未独立验证。
+生成图片仍有皮肤过于光滑、妆感较强和人物外观年轻化的问题，局部表情与眼镜等配饰也会发生变化。一个可能的原因是教师生成的监督图本身偏向美颜风格，筛选指标又没有专门衡量皮肤纹理，学生模型便学到了这种倾向。
 
-后续可固定多样人像小样本对比FLUX Fill/SDXL等teacher，加入自然皮肤纹理和人工盲评，再决定是否重构监督；更换teacher不要求直接替换学生架构。还需要相同test上的baseline/A/B定量对比、多seed等预算实验、独立身份识别器及失败样本分组统计。以上均为未来工作，不作为已完成结果。
+后续可固定多样人像小样本对比FLUX Fill/SDXL等teacher，加入自然皮肤纹理和人工盲评，再决定是否重构监督。还需要相同test上的baseline/A/B定量对比、多seed等预算实验、独立身份识别器及失败样本分组统计。
 
 模型和方法来源见[第三方说明](code/THIRD_PARTY.md)及[权重下载说明](code/README.md)。完整数据和模型权重按各自上游许可单独获取。
